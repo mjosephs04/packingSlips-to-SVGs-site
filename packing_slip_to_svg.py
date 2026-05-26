@@ -56,15 +56,15 @@ FONT_TRANSLATIONS = {
 }
 
 FONT_PROFILES = {
-    "adventure": {"width_factor": 0.95, "max_height_in": 1.35, "long_max_height_in": 1.75},
-    "asos": {"width_factor": 1.0, "max_height_in": 1.25, "long_max_height_in": 1.55},
-    "college": {"width_factor": 1.12, "max_height_in": 1.55, "long_max_height_in": 1.8},
-    "iceberg": {"width_factor": 1.0, "max_height_in": 1.25, "long_max_height_in": 1.55},
-    "jersey": {"width_factor": 1.08, "max_height_in": 1.45, "long_max_height_in": 1.75},
-    "marker": {"width_factor": 1.1, "max_height_in": 1.65, "long_max_height_in": 2.05},
-    "roboto": {"width_factor": 1.16, "max_height_in": 1.35, "long_max_height_in": 1.65},
-    "rounded": {"width_factor": 1.05, "max_height_in": 1.25, "long_max_height_in": 1.55},
-    "tough": {"width_factor": 1.05, "max_height_in": 1.25, "long_max_height_in": 1.6},
+    "adventure": {"width_factor": 0.95, "number_width_factor": 0.7, "max_height_in": 1.35, "long_max_height_in": 1.75},
+    "asos": {"width_factor": 1.0, "number_width_factor": 0.72, "max_height_in": 1.25, "long_max_height_in": 1.55},
+    "college": {"width_factor": 1.12, "number_width_factor": 0.74, "max_height_in": 1.55, "long_max_height_in": 1.8},
+    "iceberg": {"width_factor": 1.0, "number_width_factor": 0.72, "max_height_in": 1.25, "long_max_height_in": 1.55},
+    "jersey": {"width_factor": 1.08, "number_width_factor": 0.82, "max_height_in": 1.45, "long_max_height_in": 1.75},
+    "marker": {"width_factor": 1.1, "number_width_factor": 0.82, "max_height_in": 1.65, "long_max_height_in": 2.05},
+    "roboto": {"width_factor": 1.16, "number_width_factor": 0.7, "max_height_in": 1.35, "long_max_height_in": 1.65},
+    "rounded": {"width_factor": 1.05, "number_width_factor": 0.7, "max_height_in": 1.25, "long_max_height_in": 1.55},
+    "tough": {"width_factor": 1.05, "number_width_factor": 0.82, "max_height_in": 1.25, "long_max_height_in": 1.6},
 }
 
 SKIP_TEXT_VALUES = {"", "no", "none", "n/a", "na"}
@@ -430,7 +430,12 @@ def translated_font(font: str) -> str:
 def font_profile(font: str) -> dict[str, float]:
     return FONT_PROFILES.get(
         font.strip().lower(),
-        {"width_factor": 1.0, "max_height_in": 1.3, "long_max_height_in": 1.6},
+        {
+            "width_factor": 1.0,
+            "number_width_factor": 0.72,
+            "max_height_in": 1.3,
+            "long_max_height_in": 1.6,
+        },
     )
 
 
@@ -468,6 +473,20 @@ def estimated_text_width(text: str, font_size: float, font: str = "") -> float:
         else:
             width += font_size * 0.62
     return max(width * font_profile(font)["width_factor"], font_size)
+
+
+def estimated_number_width(text: str, font_size: float, font: str = "") -> float:
+    profile = font_profile(font)
+    digit_width = font_size * profile["number_width_factor"]
+    width = 0.0
+    for char in text:
+        if char.isdigit():
+            width += digit_width
+        elif char == " ":
+            width += font_size * 0.28
+        else:
+            width += font_size * 0.62 * profile["width_factor"]
+    return max(width, font_size * 0.72)
 
 
 @dataclass(frozen=True)
@@ -642,7 +661,10 @@ def scaled_rows_to_fill_width(
         # Text rows should use the full width. Pure number rows stay closer to
         # production size unless paired with text. Font-specific caps keep short
         # words from dwarfing longer names in other fonts.
-        row_scale = max(1.0, min(fill if has_text else min(fill, 1.6), height_cap_scale))
+        if has_text:
+            row_scale = max(1.0, min(fill, height_cap_scale))
+        else:
+            row_scale = 1.0
         scaled_units = [unit_with_scale(unit, row_scale) for unit in row.units]
         scaled_width = (
             sum(unit.width for unit in scaled_units)
@@ -656,8 +678,22 @@ def scaled_rows_to_fill_width(
 
 def box_for_item(item: CutItem) -> LayoutBox:
     font_size = 100.0
-    estimated_width = estimated_text_width(item.text, font_size, item.font)
     is_number = item.kind.lower() == "number"
+    if is_number:
+        estimated_width = estimated_number_width(item.text, font_size, item.font)
+        target_width = 1.5 * 96
+        target_height = 2.25 * 96
+        estimated_height = font_size * 0.92
+        return LayoutBox(
+            item=item,
+            font_size=font_size,
+            scale_x=target_width / estimated_width,
+            scale_y=target_height / estimated_height,
+            box_width=target_width,
+            box_height=target_height,
+        )
+    else:
+        estimated_width = estimated_text_width(item.text, font_size, item.font)
     text_length = len(item.text.strip())
     if is_number:
         target_height = 1.05 * 96
@@ -686,7 +722,7 @@ def make_svg_pages(items: list[CutItem]) -> tuple[list[list[PlacedText]], float,
     page_width = 8.5 * 96
     page_height = 12 * 96
     margin = 6.0
-    column_gap = 14.0
+    column_gap = 24.0
     row_gap = 0.0
     content_width = page_width - margin * 2
     content_height = page_height - margin * 2
