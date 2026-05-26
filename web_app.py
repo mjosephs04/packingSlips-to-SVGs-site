@@ -15,6 +15,7 @@ import html
 import io
 import json
 import mimetypes
+import os
 import re
 import shutil
 import sys
@@ -692,9 +693,10 @@ class AppHandler(BaseHTTPRequestHandler):
 
 def main() -> int:
     BATCH_ROOT.mkdir(parents=True, exist_ok=True)
-    port = 8765
-    server = ThreadingHTTPServer(("127.0.0.1", port), AppHandler)
-    print(f"Packing Slip SVG Builder running at http://127.0.0.1:{port}")
+    host = os.environ.get("HOST", "127.0.0.1")
+    port = int(os.environ.get("PORT", "8765"))
+    server = ThreadingHTTPServer((host, port), AppHandler)
+    print(f"Packing Slip SVG Builder running at http://{host}:{port}")
     print("Press Ctrl+C to stop.")
     try:
         server.serve_forever()

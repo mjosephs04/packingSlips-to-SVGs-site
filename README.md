@@ -47,3 +47,34 @@ http://127.0.0.1:8765
 ```
 
 Upload a packing slip PDF, review the parsed custom entries, then download the SVGs individually or as a ZIP.
+
+## Docker / Cloud Run
+
+Build the container locally:
+
+```bash
+docker build -t packing-slip-svg .
+```
+
+Run it locally:
+
+```bash
+docker run --rm -p 8080:8080 -e PORT=8080 packing-slip-svg
+```
+
+Then open:
+
+```text
+http://127.0.0.1:8080
+```
+
+Deploy to Google Cloud Run:
+
+```bash
+gcloud run deploy packing-slip-svg \
+  --source . \
+  --region us-central1 \
+  --allow-unauthenticated
+```
+
+Cloud Run supplies the `PORT` environment variable automatically. The container includes Poppler's `pdftotext`, which the parser needs to read uploaded PDFs.

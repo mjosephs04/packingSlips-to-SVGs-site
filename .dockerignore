@@ -1,0 +1,10 @@
+__pycache__/
+*.py[cod]
+.git/
+.DS_Store
+web_batches/
+*_test/
+*_render*.png
+*_ref.png
+sample_cut_batch*/
+cut_batch_*/
