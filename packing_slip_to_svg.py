@@ -499,6 +499,7 @@ class PlacedText:
     scale_y: float
     box_width: float
     box_height: float
+    rotation: int = 0
 
 
 @dataclass(frozen=True)
@@ -509,6 +510,20 @@ class LayoutBox:
     scale_y: float
     box_width: float
     box_height: float
+
+
+@dataclass(frozen=True)
+class PackBox:
+    box: LayoutBox
+    rotate: bool = False
+
+    @property
+    def width(self) -> float:
+        return self.box.box_width
+
+    @property
+    def height(self) -> float:
+        return self.box.box_height
 
 
 @dataclass(frozen=True)
@@ -708,7 +723,7 @@ def box_for_item(item: CutItem) -> LayoutBox:
     estimated_height = font_size * 0.92
     scale = target_height / estimated_height
     target_width = estimated_width * scale
-    return LayoutBox(
+    box = LayoutBox(
         item=item,
         font_size=font_size,
         scale_x=scale,
@@ -716,18 +731,236 @@ def box_for_item(item: CutItem) -> LayoutBox:
         box_width=target_width,
         box_height=target_height,
     )
+    return apply_product_size_profile(box)
+
+
+def apply_product_size_profile(box: LayoutBox) -> LayoutBox:
+    if box.item.kind.lower() == "number":
+        return box
+
+    product = box.item.product.lower()
+    text_length = len(box.item.text.strip())
+    target_width: float | None = None
+    target_height: float | None = None
+
+    if "headband" in product:
+        target_width = 3.5 * 96 if text_length <= 4 else min(5.5 * 96, max(box.box_width, 4.25 * 96))
+        target_height = 1.05 * 96
+    elif "arm sleeve" in product:
+        target_width = 7.9 * 96
+        target_height = 1.55 * 96
+    elif "compression" in product:
+        target_width = 7.8 * 96
+        target_height = 1.45 * 96
+
+    if target_width is None or target_height is None:
+        return box
+
+    width_ratio = target_width / box.box_width if box.box_width else 1.0
+    height_ratio = target_height / box.box_height if box.box_height else 1.0
+    return LayoutBox(
+        item=box.item,
+        font_size=box.font_size,
+        scale_x=box.scale_x * width_ratio,
+        scale_y=box.scale_y * height_ratio,
+        box_width=target_width,
+        box_height=target_height,
+    )
+
+
+def should_rotate_for_packing(box: LayoutBox) -> bool:
+    text = box.item.text.strip()
+    product = box.item.product.lower()
+    is_text = box.item.kind.lower() != "number"
+
+    if "headband" in product:
+        return True
+    if "arm sleeve" in product and is_text and len(text) >= 5:
+        return True
+    if "compression" in product and is_text and len(text) >= 8:
+        return True
+    return False
+
+
+def make_column_packed_pages(
+    boxes: list[LayoutBox],
+    page_width: float,
+    page_height: float,
+    margin: float,
+    gap: float,
+) -> list[list[PlacedText]]:
+    content_width = page_width - margin * 2
+    content_height = page_height - margin * 2
+    pack_boxes = [PackBox(box, should_rotate_for_packing(box)) for box in boxes]
+    pack_boxes.sort(
+        key=lambda entry: (
+            0 if entry.rotate else 1,
+            -entry.height,
+            -entry.width,
+            entry.box.item.color.lower(),
+        )
+    )
+
+    pages: list[list[PlacedText]] = []
+    current_page: list[PlacedText] = []
+    columns: list[dict[str, float]] = []
+
+    def commit_page() -> None:
+        nonlocal current_page, columns
+        if current_page:
+            pages.append(current_page)
+        current_page = []
+        columns = []
+
+    def current_width() -> float:
+        if not columns:
+            return 0.0
+        return max(column["x"] + column["width"] - margin for column in columns)
+
+    for pack_box in pack_boxes:
+        chosen: dict[str, float] | None = None
+        for column in columns:
+            if (
+                pack_box.width <= column["width"] + 0.001
+                and column["y"] + pack_box.height <= margin + content_height + 0.001
+            ):
+                chosen = column
+                break
+
+        if chosen is None:
+            x = margin if not columns else max(column["x"] + column["width"] for column in columns) + gap
+            if columns and x + pack_box.width > margin + content_width:
+                commit_page()
+                x = margin
+            chosen = {"x": x, "y": margin, "width": pack_box.width}
+            columns.append(chosen)
+
+        box = pack_box.box
+        current_page.append(
+            PlacedText(
+                item=box.item,
+                x=chosen["x"],
+                y=chosen["y"],
+                font_size=box.font_size,
+                scale_x=box.scale_x,
+                scale_y=box.scale_y,
+                box_width=box.box_width,
+                box_height=box.box_height,
+                rotation=90 if pack_box.rotate else 0,
+            )
+        )
+        chosen["y"] += pack_box.height + gap
+        chosen["width"] = max(chosen["width"], pack_box.width)
+
+        if current_width() > content_width and len(columns) > 1:
+            overflow = current_page.pop()
+            columns.pop()
+            if not current_page:
+                current_page.append(overflow)
+            else:
+                commit_page()
+                new_column = {"x": margin, "y": margin + pack_box.height + gap, "width": pack_box.width}
+                columns.append(new_column)
+                current_page.append(overflow)
+
+    if current_page:
+        pages.append(current_page)
+    return pages
+
+
+def fit_box_to_content_width(box: LayoutBox, content_width: float) -> LayoutBox:
+    if box.box_width <= content_width:
+        return box
+    if box.item.kind.lower() == "number":
+        return box
+    width_ratio = content_width / box.box_width
+    return LayoutBox(
+        item=box.item,
+        font_size=box.font_size,
+        scale_x=box.scale_x * width_ratio,
+        scale_y=box.scale_y,
+        box_width=content_width,
+        box_height=box.box_height,
+    )
+
+
+def make_horizontal_packed_pages(
+    boxes: list[LayoutBox],
+    page_width: float,
+    page_height: float,
+    margin: float,
+    gap: float,
+) -> list[list[PlacedText]]:
+    content_width = page_width - margin * 2
+    content_height = page_height - margin * 2
+    pages: list[list[PlacedText]] = []
+    current_page: list[PlacedText] = []
+    x = margin
+    y = margin
+    row_height = 0.0
+
+    def new_page() -> None:
+        nonlocal current_page, x, y, row_height
+        if current_page:
+            pages.append(current_page)
+        current_page = []
+        x = margin
+        y = margin
+        row_height = 0.0
+
+    def new_row() -> None:
+        nonlocal x, y, row_height
+        x = margin
+        y += row_height + gap
+        row_height = 0.0
+
+    for raw_box in boxes:
+        box = fit_box_to_content_width(raw_box, content_width)
+        if x > margin and x + box.box_width > margin + content_width:
+            new_row()
+        if y > margin and y + box.box_height > margin + content_height:
+            new_page()
+        if box.box_height > content_height and current_page:
+            new_page()
+
+        current_page.append(
+            PlacedText(
+                item=box.item,
+                x=x,
+                y=y,
+                font_size=box.font_size,
+                scale_x=box.scale_x,
+                scale_y=box.scale_y,
+                box_width=box.box_width,
+                box_height=box.box_height,
+                rotation=0,
+            )
+        )
+        x += box.box_width + gap
+        row_height = max(row_height, box.box_height)
+
+    if current_page:
+        pages.append(current_page)
+    return pages
 
 
 def make_svg_pages(items: list[CutItem]) -> tuple[list[list[PlacedText]], float, float]:
     page_width = 8.5 * 96
     page_height = 12 * 96
     margin = 6.0
-    column_gap = 24.0
+    column_gap = 18.0
     row_gap = 0.0
     content_width = page_width - margin * 2
     content_height = page_height - margin * 2
 
     boxes = [box_for_item(item) for item in expanded_items(items)]
+    if any("headband" in box.item.product.lower() or "arm sleeve" in box.item.product.lower() for box in boxes):
+        return (
+            make_horizontal_packed_pages(boxes, page_width, page_height, margin, column_gap),
+            page_width,
+            page_height,
+        )
+
     units = build_layout_units(boxes, column_gap)
     rows = scaled_rows_to_fill_width(
         make_rows(units, content_width, column_gap), content_width, column_gap
@@ -800,9 +1033,18 @@ def render_svg(color: str, items: list[CutItem], out_path: Path) -> None:
             item = entry.item
             safe_font = xml_escape(translated_font(item.font))
             baseline = entry.font_size * 0.78
+            if entry.rotation == 90:
+                transform = (
+                    f"translate({entry.x + entry.box_height:.2f} {entry.y:.2f}) "
+                    f"rotate(90) scale({entry.scale_x:.4f} {entry.scale_y:.4f})"
+                )
+            else:
+                transform = (
+                    f"translate({entry.x:.2f} {entry.y:.2f}) "
+                    f"scale({entry.scale_x:.4f} {entry.scale_y:.4f})"
+                )
             parts.append(
-                f'<g transform="translate({entry.x:.2f} {entry.y:.2f}) '
-                f'scale({entry.scale_x:.4f} {entry.scale_y:.4f})">'
+                f'<g transform="{transform}">'
                 f'<text x="0" y="{baseline:.2f}" '
                 f'font-family="{safe_font}" font-size="{entry.font_size:.2f}" '
                 f'fill="none" stroke="{stroke}" stroke-width="1" '
